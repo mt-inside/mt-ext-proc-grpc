@@ -11,7 +11,7 @@ use std::collections::hash_map::HashMap;
 
 use envoy_types::pb::{
     envoy::{
-        config::core::v3::{HeaderMap, Metadata},
+        config::core::v3::{HeaderMap, HeaderValue, HeaderValueOption, Metadata},
         extensions::filters::http::ext_proc::v3::ProcessingMode,
         service::ext_proc::v3::{common_response::ResponseStatus, external_processor_server::ExternalProcessorServer, CommonResponse, HeaderMutation},
     },
@@ -39,7 +39,27 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         print_headers(headers);
         println!();
 
-        (CommonResponse::default(), None, None)
+        (
+            CommonResponse {
+                status: ResponseStatus::Continue.into(),
+                header_mutation: Some(HeaderMutation {
+                    set_headers: vec![HeaderValueOption {
+                        header: Some(HeaderValue {
+                            key: NAME.to_owned(),
+                            value: "request headers".to_owned(),
+                            ..HeaderValue::default()
+                        }),
+                        ..HeaderValueOption::default()
+                    }],
+                    remove_headers: vec![],
+                }),
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: false,
+            },
+            None,
+            None,
+        )
     }
 
     fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
@@ -53,7 +73,17 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         (
             CommonResponse {
                 status: ResponseStatus::Continue.into(),
-                header_mutation: None,
+                header_mutation: Some(HeaderMutation {
+                    set_headers: vec![HeaderValueOption {
+                        header: Some(HeaderValue {
+                            key: NAME.to_owned(),
+                            value: "response headers".to_owned(),
+                            ..HeaderValue::default()
+                        }),
+                        ..HeaderValueOption::default()
+                    }],
+                    remove_headers: vec![],
+                }),
                 body_mutation: None,
                 trailers: None,
                 clear_route_cache: false,
@@ -71,16 +101,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         print_body(body);
         println!();
 
-        (
-            CommonResponse {
-                status: ResponseStatus::Continue.into(),
-                header_mutation: None,
-                body_mutation: None,
-                trailers: None,
-                clear_route_cache: false,
-            },
-            None,
-        )
+        (CommonResponse::default(), None)
     }
 
     fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
@@ -91,16 +112,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         print_body(body);
         println!();
 
-        (
-            CommonResponse {
-                status: ResponseStatus::Continue.into(),
-                header_mutation: None,
-                body_mutation: None,
-                trailers: None,
-                clear_route_cache: false,
-            },
-            None,
-        )
+        (CommonResponse::default(), None)
     }
 
     fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
