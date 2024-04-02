@@ -1,18 +1,25 @@
 #![feature(let_chains)]
 
-use envoy_types::pb::envoy::{
-    config::core::v3::HeaderMap,
-    service::ext_proc::v3::{
-        common_response::ResponseStatus,
-        external_processor_server::{ExternalProcessor, ExternalProcessorServer},
-        processing_request::Request as ProcRequest,
-        processing_response::Response as ProcResponse,
-        BodyResponse, CommonResponse, HeadersResponse, HttpBody, ProcessingRequest, ProcessingResponse, TrailersResponse,
+/* TODO
+ * - handle kube graceful shutdown (sig 15?)
+ * - copy better error handling from the example
+ */
+
+mod ext_proc;
+
+use std::collections::hash_map::HashMap;
+
+use envoy_types::pb::{
+    envoy::{
+        config::core::v3::{HeaderMap, Metadata},
+        extensions::filters::http::ext_proc::v3::ProcessingMode,
+        service::ext_proc::v3::{common_response::ResponseStatus, external_processor_server::ExternalProcessorServer, CommonResponse, HeaderMutation},
     },
+    google::protobuf::Struct,
 };
-use tokio::sync::mpsc;
-use tokio_stream::{wrappers::ReceiverStream, StreamExt};
-use tonic::{transport::Server, Request, Response, Status, Streaming};
+use ext_proc::{ProcessingRequestHandler, ProcessingRequestHandlerServer};
+use tokio::signal::unix::{signal, SignalKind};
+use tonic::transport::Server;
 use tracing::*;
 use tracing_subscriber::{filter, prelude::*};
 
@@ -21,136 +28,102 @@ pub static NAME: &str = env!("CARGO_BIN_NAME"); // clap only has a macro for cra
 pub static VERSION: &str = clap::crate_version!();
 
 #[derive(Default)]
-struct MyExtProc;
+struct MyExtProcHandler;
 
-fn map(req: ProcessingRequest) -> ProcessingResponse {
-    assert!(!req.async_mode);
+impl ProcessingRequestHandler for MyExtProcHandler {
+    fn request_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+        println!("== REQUEST HEADERS ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("HEADERS");
+        print_headers(headers);
+        println!();
 
-    let resp = map_inner(req).unwrap_or_default();
-    resp
-}
-
-fn map_inner(req: ProcessingRequest) -> Option<ProcessingResponse> {
-    // TODO: make a trait for this that people impl: ProcessingHandler{fn request_headers(metadata_context, attrs, req:HttpHeaders) -> CommonResponse, etc}
-    // - and a fn that takes one and dispatches to it as below
-    // - PR to envoy-types crate
-    match req.request.as_ref()? {
-        ProcRequest::RequestHeaders(hs) => {
-            println!("== REQUEST HEADERS ==");
-            print_common(&req);
-            println!("Body follows: {}", !hs.end_of_stream);
-            println!("HEADERS");
-            if let Some(hs) = &hs.headers {
-                print_headers(hs);
-            }
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::RequestHeaders(HeadersResponse {
-                    response: Some(CommonResponse {
-                        status: ResponseStatus::Continue.into(),
-                        header_mutation: None,
-                        body_mutation: None,
-                        trailers: None,
-                        clear_route_cache: false,
-                    }),
-                })),
-                ..ProcessingResponse::default()
-            })
-        }
-        ProcRequest::ResponseHeaders(hs) => {
-            println!("== RESPONSE HEADERS ==");
-            print_common(&req);
-            println!("Body follows: {}", !hs.end_of_stream);
-            println!("HEADERS");
-            if let Some(hs) = &hs.headers {
-                print_headers(hs);
-            }
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::ResponseHeaders(HeadersResponse {
-                    response: Some(CommonResponse {
-                        status: ResponseStatus::Continue.into(),
-                        header_mutation: None,
-                        body_mutation: None,
-                        trailers: None,
-                        clear_route_cache: false,
-                    }),
-                })),
-                ..ProcessingResponse::default()
-            })
-        }
-        ProcRequest::RequestBody(b) => {
-            println!("== REQUEST BODY ==");
-            print_common(&req);
-            println!("Trailers follow: {}", !b.end_of_stream);
-            println!("BODY");
-            print_body(b);
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::RequestBody(BodyResponse {
-                    response: Some(CommonResponse {
-                        status: ResponseStatus::Continue.into(),
-                        header_mutation: None,
-                        body_mutation: None,
-                        trailers: None,
-                        clear_route_cache: false,
-                    }),
-                })),
-                ..ProcessingResponse::default()
-            })
-        }
-        ProcRequest::ResponseBody(b) => {
-            println!("== RESPONSE BODY ==");
-            print_common(&req);
-            println!("Trailers follow: {}", !b.end_of_stream);
-            println!("BODY");
-            print_body(b);
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::ResponseBody(BodyResponse {
-                    response: Some(CommonResponse {
-                        status: ResponseStatus::Continue.into(),
-                        header_mutation: None,
-                        body_mutation: None,
-                        trailers: None,
-                        clear_route_cache: false,
-                    }),
-                })),
-                ..ProcessingResponse::default()
-            })
-        }
-        ProcRequest::RequestTrailers(ts) => {
-            println!("== REQUEST TRAILERS ==");
-            print_common(&req);
-            println!("TRAILERS");
-            if let Some(ts) = &ts.trailers {
-                print_headers(ts);
-            }
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::RequestTrailers(TrailersResponse { header_mutation: None })),
-                ..ProcessingResponse::default()
-            })
-        }
-        ProcRequest::ResponseTrailers(ts) => {
-            println!("== RESPONSE TRAILERS ==");
-            print_common(&req);
-            println!("TRAILERS");
-            if let Some(ts) = &ts.trailers {
-                print_headers(ts);
-            }
-            println!();
-            Some(ProcessingResponse {
-                response: Some(ProcResponse::ResponseTrailers(TrailersResponse { header_mutation: None })),
-                ..ProcessingResponse::default()
-            })
-        }
+        (CommonResponse::default(), None, None)
     }
-}
 
-fn print_common(req: &ProcessingRequest) {
-    println!("Dynamic metadata: {:?}", req.metadata_context);
-    println!("Attributes: {:?}", req.attributes);
+    fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+        println!("== RESPONSE HEADERS ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("HEADERS");
+        print_headers(headers);
+        println!();
+
+        (
+            CommonResponse {
+                status: ResponseStatus::Continue.into(),
+                header_mutation: None,
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: false,
+            },
+            None,
+            None,
+        )
+    }
+
+    fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+        println!("== REQUEST BODY ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("BODY");
+        print_body(body);
+        println!();
+
+        (
+            CommonResponse {
+                status: ResponseStatus::Continue.into(),
+                header_mutation: None,
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: false,
+            },
+            None,
+        )
+    }
+
+    fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+        println!("== RESPONSE BODY ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("BODY");
+        print_body(body);
+        println!();
+
+        (
+            CommonResponse {
+                status: ResponseStatus::Continue.into(),
+                header_mutation: None,
+                body_mutation: None,
+                trailers: None,
+                clear_route_cache: false,
+            },
+            None,
+        )
+    }
+
+    fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+        println!("== REQUEST TRAILERS ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("TRAILERS");
+        print_headers(trailers);
+        println!();
+
+        (None, None)
+    }
+
+    fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+        println!("== RESPONSE TRAILERS ==");
+        println!("Dynamic metadata: {:?}", metadata_context);
+        println!("Attributes: {:?}", attributes);
+        println!("TRAILERS");
+        print_headers(trailers);
+        println!();
+
+        (None, None)
+    }
 }
 
 fn print_headers(hs: &HeaderMap) {
@@ -167,35 +140,17 @@ fn print_headers(hs: &HeaderMap) {
     }
 }
 
-fn print_body(body: &HttpBody) {
-    println!("Body of len: {}", body.body.len());
+fn print_body(body: &[u8]) {
+    println!("Body of len: {}", body.len());
 }
 
-#[tonic::async_trait]
-impl ExternalProcessor for MyExtProc {
-    type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
+async fn wait_for_signals() {
+    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+    let mut sigint = signal(SignalKind::interrupt()).unwrap();
 
-    async fn process(&self, request: Request<Streaming<ProcessingRequest>>) -> Result<Response<Self::ProcessStream>, Status> {
-        let mut ins = request.into_inner();
-        let (tx, rx) = mpsc::channel(128);
-
-        tokio::spawn(async move {
-            while let Some(result) = ins.next().await {
-                match result {
-                    Ok(v) => tx.send(Ok(map(v))).await.expect("working rx"),
-                    Err(err) => {
-                        // For better error handling see https://github.com/hyperium/tonic/blob/master/examples/src/streaming/server.rs
-                        match tx.send(Err(err)).await {
-                            Ok(_) => (),
-                            Err(_err) => break,
-                        }
-                    }
-                }
-            }
-        });
-
-        let outs = ReceiverStream::new(rx);
-        Ok(Response::new(outs))
+    tokio::select! {
+        _ = sigterm.recv() => tracing::debug!("Received SIGTERM."),
+        _ = sigint.recv() => tracing::debug!("Received SIGINT."),
     }
 }
 
@@ -212,11 +167,14 @@ async fn main() -> Result<(), anyhow::Error> {
         .init();
 
     let addr = "0.0.0.0:50051".parse()?;
-    let server = MyExtProc;
+    let server = ProcessingRequestHandlerServer::new(MyExtProcHandler);
 
     info!(%addr, "listening");
 
-    Server::builder().add_service(ExternalProcessorServer::new(server)).serve(addr).await?;
+    Server::builder()
+        .add_service(ExternalProcessorServer::new(server))
+        .serve_with_shutdown(addr, wait_for_signals())
+        .await?;
 
     Ok(())
 }
