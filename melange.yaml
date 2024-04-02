@@ -1,7 +1,7 @@
 package:
   name: mt-ext-proc-grpc
-  epoch: 0
-  version: 74633ef-dirty
+  epoch: 5
+  version: cda6058-dirty
   description: Example Envoy ext_proc
   url: https://github.com/mt-inside/TODO
   copyright:

@@ -3,7 +3,7 @@ set dotenv-load
 default:
 	@just --list --unsorted --color=always
 
-NAME := "mt-ext-authz-grpc"
+NAME := "mt-ext-proc-grpc"
 DH_USER := "mtinside"
 GH_USER := "mt-inside"
 DH_REPO := "docker.io/" + DH_USER + "/" + NAME
