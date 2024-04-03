@@ -74,6 +74,9 @@ package: #test
 run *ARGS: test
 	cargo run -- {{ARGS}}
 
+health-check:
+	grpc-health-probe -addr=localhost:50051 -service=envoy.service.ext_proc.v3.ExternalProcessor
+
 image-local:
 	{{APKO}} build --keyring-append melange.rsa.pub --arch {{CGR_ARCHS}} apko.yaml {{GH_REPO}}:{{TAG}} {{NAME}}.tar
 	docker load < {{NAME}}.tar

@@ -1,12 +1,3 @@
-#![feature(let_chains)]
-
-/* TODO
- * - handle kube graceful shutdown (sig 15?)
- * - copy better error handling from the example
- */
-
-mod ext_proc;
-
 use std::collections::hash_map::HashMap;
 
 use envoy_types::pb::{
@@ -17,21 +8,24 @@ use envoy_types::pb::{
     },
     google::protobuf::Struct,
 };
-use ext_proc::{ProcessingRequestHandler, ProcessingRequestHandlerServer};
+use mt_ext_proc_grpc::ext_proc::{ProcessingRequestHandler, ProcessingRequestHandlerServer};
 use tokio::signal::unix::{signal, SignalKind};
 use tonic::transport::Server;
 use tracing::*;
 use tracing_subscriber::{filter, prelude::*};
 
-pub static PKG: &str = env!("CARGO_PKG_NAME");
-pub static NAME: &str = env!("CARGO_BIN_NAME"); // clap only has a macro for crate name
-pub static VERSION: &str = clap::crate_version!();
+pub static PROJ_PRETTY_NAME: &str = env!("CARGO_PKG_NAME");
+pub static PROJ_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub static BIN_PRETTY_NAME: &str = env!("CARGO_BIN_NAME");
+pub static BIN_CODE_NAME: &str = env!("CARGO_CRATE_NAME");
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct MyExtProcHandler;
 
 impl ProcessingRequestHandler for MyExtProcHandler {
+    #[tracing::instrument(skip_all)]
     fn request_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+        trace!("handling");
         println!("== REQUEST HEADERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -45,7 +39,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
                 header_mutation: Some(HeaderMutation {
                     set_headers: vec![HeaderValueOption {
                         header: Some(HeaderValue {
-                            key: NAME.to_owned(),
+                            key: BIN_PRETTY_NAME.to_owned(),
                             value: "request headers".to_owned(),
                             ..HeaderValue::default()
                         }),
@@ -62,7 +56,9 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         )
     }
 
+    #[tracing::instrument(skip_all)]
     fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+        trace!("handling");
         println!("== RESPONSE HEADERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -76,7 +72,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
                 header_mutation: Some(HeaderMutation {
                     set_headers: vec![HeaderValueOption {
                         header: Some(HeaderValue {
-                            key: NAME.to_owned(),
+                            key: BIN_PRETTY_NAME.to_owned(),
                             value: "response headers".to_owned(),
                             ..HeaderValue::default()
                         }),
@@ -93,7 +89,9 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         )
     }
 
+    #[tracing::instrument(skip_all)]
     fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+        trace!("handling");
         println!("== REQUEST BODY ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -104,7 +102,9 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         (CommonResponse::default(), None)
     }
 
+    #[tracing::instrument(skip_all)]
     fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+        trace!("handling");
         println!("== RESPONSE BODY ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -115,7 +115,9 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         (CommonResponse::default(), None)
     }
 
+    #[tracing::instrument(skip_all)]
     fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+        trace!("handling");
         println!("== REQUEST TRAILERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -126,7 +128,9 @@ impl ProcessingRequestHandler for MyExtProcHandler {
         (None, None)
     }
 
+    #[tracing::instrument(skip_all)]
     fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+        trace!("handling");
         println!("== RESPONSE TRAILERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
         println!("Attributes: {:?}", attributes);
@@ -161,8 +165,8 @@ async fn wait_for_signals() {
     let mut sigint = signal(SignalKind::interrupt()).unwrap();
 
     tokio::select! {
-        _ = sigterm.recv() => tracing::debug!("Received SIGTERM."),
-        _ = sigint.recv() => tracing::debug!("Received SIGINT."),
+        _ = sigterm.recv() => tracing::info!("Received SIGTERM."),
+        _ = sigint.recv() => tracing::info!("Received SIGINT."),
     }
 }
 
@@ -172,8 +176,8 @@ async fn main() -> Result<(), anyhow::Error> {
         .with(
             filter::Targets::new()
                 .with_default(Level::INFO)
-                .with_target(PKG, Level::INFO) // the library package
-                .with_target(NAME, Level::INFO), // this binary package
+                .with_target(mt_ext_proc_grpc::LIB_CODE_NAME, Level::TRACE) // this package's library crate
+                .with_target(BIN_CODE_NAME, Level::TRACE), // this binary crate
         )
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
@@ -181,9 +185,17 @@ async fn main() -> Result<(), anyhow::Error> {
     let addr = "0.0.0.0:50051".parse()?;
     let server = ProcessingRequestHandlerServer::new(MyExtProcHandler);
 
+    let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
+    health_reporter
+        // Set initial health value to high
+        .set_serving::<ExternalProcessorServer<ProcessingRequestHandlerServer<MyExtProcHandler>>>()
+        .await;
+
     info!(%addr, "listening");
 
     Server::builder()
+        .trace_fn(|_| tracing::debug_span!("grpc_server"))
+        .add_service(health_service)
         .add_service(ExternalProcessorServer::new(server))
         .serve_with_shutdown(addr, wait_for_signals())
         .await?;

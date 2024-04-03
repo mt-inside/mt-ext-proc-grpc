@@ -1,5 +1,5 @@
 // TODO PR to envoy-types crate
-use std::{collections::hash_map::HashMap, sync::Arc};
+use std::{collections::hash_map::HashMap, error::Error, io::ErrorKind, sync::Arc};
 
 use envoy_types::pb::{
     envoy::{
@@ -15,6 +15,7 @@ use envoy_types::pb::{
 use tokio::sync::mpsc;
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
+use tracing::*;
 
 pub trait ProcessingRequestHandler: Send + Sync + 'static {
     fn request_headers(
@@ -39,11 +40,13 @@ pub trait ProcessingRequestHandler: Send + Sync + 'static {
     fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>);
 }
 
+#[derive(Debug)]
 struct _Inner<T>(Arc<T>);
-pub struct ProcessingRequestHandlerServer<T: ProcessingRequestHandler> {
+#[derive(Debug)]
+pub struct ProcessingRequestHandlerServer<T: ProcessingRequestHandler + std::fmt::Debug> {
     handler: _Inner<T>,
 }
-impl<T: ProcessingRequestHandler> ProcessingRequestHandlerServer<T> {
+impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServer<T> {
     pub fn new(handler: T) -> Self {
         Self { handler: _Inner(Arc::new(handler)) }
     }
@@ -120,23 +123,26 @@ impl<T: ProcessingRequestHandler> ProcessingRequestHandlerServer<T> {
     }
 }
 
-impl<T: ProcessingRequestHandler> Clone for ProcessingRequestHandlerServer<T> {
+impl<T: ProcessingRequestHandler + std::fmt::Debug> Clone for ProcessingRequestHandlerServer<T> {
     fn clone(&self) -> Self {
         let handler = self.handler.clone();
         Self { handler }
     }
 }
-impl<T: ProcessingRequestHandler> Clone for _Inner<T> {
+impl<T: ProcessingRequestHandler + std::fmt::Debug> Clone for _Inner<T> {
     fn clone(&self) -> Self {
         Self(Arc::clone(&self.0))
     }
 }
 
 #[tonic::async_trait]
-impl<T: ProcessingRequestHandler> ExternalProcessor for ProcessingRequestHandlerServer<T> {
+impl<T: ProcessingRequestHandler + std::fmt::Debug> ExternalProcessor for ProcessingRequestHandlerServer<T> {
     type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
 
+    #[tracing::instrument(skip_all)]
     async fn process(&self, request: Request<Streaming<ProcessingRequest>>) -> Result<Response<Self::ProcessStream>, Status> {
+        debug!("processing grpc stream item");
+
         let mut ins = request.into_inner();
         let (tx, rx) = mpsc::channel(128);
 
@@ -146,7 +152,14 @@ impl<T: ProcessingRequestHandler> ExternalProcessor for ProcessingRequestHandler
                 match result {
                     Ok(v) => tx.send(Ok(this.dispatch(v))).await.expect("working rx"),
                     Err(err) => {
-                        // For better error handling see https://github.com/hyperium/tonic/blob/master/examples/src/streaming/server.rs
+                        if let Some(io_err) = as_io_error(&err) {
+                            if io_err.kind() == ErrorKind::BrokenPipe {
+                                error!(?io_err, "client disconnected: broken pipe");
+                                // TODO: reconnect
+                                break;
+                            }
+                        }
+
                         match tx.send(Err(err)).await {
                             Ok(_) => (),
                             Err(_err) => break,
@@ -158,5 +171,28 @@ impl<T: ProcessingRequestHandler> ExternalProcessor for ProcessingRequestHandler
 
         let outs = ReceiverStream::new(rx);
         Ok(Response::new(outs))
+    }
+}
+
+fn as_io_error(err_status: &Status) -> Option<&std::io::Error> {
+    let mut err: &(dyn Error + 'static) = err_status;
+
+    loop {
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            return Some(io_err);
+        }
+
+        // h2::Error does not expose std::io::Error with `source()`
+        // https://github.com/hyperium/h2/pull/462
+        if let Some(h2_err) = err.downcast_ref::<h2::Error>() {
+            if let Some(io_err) = h2_err.get_io() {
+                return Some(io_err);
+            }
+        }
+
+        err = match err.source() {
+            Some(err) => err,
+            None => return None,
+        };
     }
 }
