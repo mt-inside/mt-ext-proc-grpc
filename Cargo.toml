@@ -12,7 +12,6 @@ tokio-stream = { version = "0.1.15" }
 anyhow = "1.0.81"
 tracing = "0.1.40"
 tracing-subscriber = "0.3.18"
-clap = { version = "4.5.3", features = ["derive", "cargo"] }
 h2 = { version = "0.3.25" }
 
 [profile.release]
