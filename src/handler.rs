@@ -11,12 +11,19 @@ use envoy_types::pb::{
 use mt_ext_proc_grpc::ext_proc::ProcessingRequestHandler;
 use tracing::*;
 
-#[derive(Default, Debug)]
+#[derive(Debug)]
 pub struct MyExtProcHandler;
 
+impl MyExtProcHandler {
+    pub async fn new() -> Result<Self, anyhow::Error> {
+        Ok(Self)
+    }
+}
+
+#[tonic::async_trait]
 impl ProcessingRequestHandler for MyExtProcHandler {
     #[tracing::instrument(skip_all)]
-    fn request_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+    async fn request_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
         trace!("handling");
         println!("== REQUEST HEADERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
@@ -49,7 +56,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
     }
 
     #[tracing::instrument(skip_all)]
-    fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
+    async fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>) {
         trace!("handling");
         println!("== RESPONSE HEADERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
@@ -82,7 +89,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
     }
 
     #[tracing::instrument(skip_all)]
-    fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+    async fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
         trace!("handling");
         println!("== REQUEST BODY ==");
         println!("Dynamic metadata: {:?}", metadata_context);
@@ -95,7 +102,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
     }
 
     #[tracing::instrument(skip_all)]
-    fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
+    async fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>) {
         trace!("handling");
         println!("== RESPONSE BODY ==");
         println!("Dynamic metadata: {:?}", metadata_context);
@@ -108,7 +115,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
     }
 
     #[tracing::instrument(skip_all)]
-    fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+    async fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
         trace!("handling");
         println!("== REQUEST TRAILERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);
@@ -121,7 +128,7 @@ impl ProcessingRequestHandler for MyExtProcHandler {
     }
 
     #[tracing::instrument(skip_all)]
-    fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
+    async fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>) {
         trace!("handling");
         println!("== RESPONSE TRAILERS ==");
         println!("Dynamic metadata: {:?}", metadata_context);

@@ -34,8 +34,8 @@ async fn main() -> Result<(), anyhow::Error> {
         .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr))
         .init();
 
-    let addr = "0.0.0.0:50051".parse()?;
-    let server = ProcessingRequestHandlerServer::new(handler::MyExtProcHandler);
+    let h = handler::MyExtProcHandler::new().await?;
+    let server = ProcessingRequestHandlerServer::new(h);
 
     let (mut health_reporter, health_service) = tonic_health::server::health_reporter();
     health_reporter
@@ -43,6 +43,7 @@ async fn main() -> Result<(), anyhow::Error> {
         .set_serving::<ExternalProcessorServer<ProcessingRequestHandlerServer<handler::MyExtProcHandler>>>()
         .await;
 
+    let addr = "0.0.0.0:50051".parse()?;
     info!(%addr, "listening");
 
     Server::builder()

@@ -17,8 +17,9 @@ use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 use tonic::{Request, Response, Status, Streaming};
 use tracing::*;
 
+#[tonic::async_trait]
 pub trait ProcessingRequestHandler: Send + Sync + 'static {
-    fn request_headers(
+    async fn request_headers(
         &self,
         headers: &HeaderMap,
         metadata_context: Option<Metadata>,
@@ -29,15 +30,15 @@ pub trait ProcessingRequestHandler: Send + Sync + 'static {
         Option<ProcessingMode>,
     );
 
-    fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>);
+    async fn response_headers(&self, headers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>, Option<ProcessingMode>);
 
-    fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>);
+    async fn request_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>);
 
-    fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>);
+    async fn response_body(&self, body: &[u8], metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (CommonResponse, Option<Struct>);
 
-    fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>);
+    async fn request_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>);
 
-    fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>);
+    async fn response_trailers(&self, trailers: &HeaderMap, metadata_context: Option<Metadata>, attributes: HashMap<String, Struct>) -> (Option<HeaderMutation>, Option<Struct>);
 }
 
 #[derive(Debug)]
@@ -51,16 +52,16 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
         Self { handler: _Inner(Arc::new(handler)) }
     }
 
-    fn dispatch(&self, req: ProcessingRequest) -> ProcessingResponse {
+    async fn dispatch(&self, req: ProcessingRequest) -> ProcessingResponse {
         assert!(!req.async_mode);
 
-        self.dispatch_inner(req).unwrap_or_default()
+        self.dispatch_inner(req).await.unwrap_or_default()
     }
 
-    fn dispatch_inner(&self, req: ProcessingRequest) -> Option<ProcessingResponse> {
+    async fn dispatch_inner(&self, req: ProcessingRequest) -> Option<ProcessingResponse> {
         match req.request.as_ref()? {
             ProcRequest::RequestHeaders(hs) => {
-                let (common_resp, dynamic_metadata, mode_override) = self.handler.0.request_headers(hs.headers.as_ref()?, req.metadata_context, req.attributes);
+                let (common_resp, dynamic_metadata, mode_override) = self.handler.0.request_headers(hs.headers.as_ref()?, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::RequestHeaders(HeadersResponse { response: Some(common_resp) })),
@@ -70,7 +71,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
                 })
             }
             ProcRequest::ResponseHeaders(hs) => {
-                let (common_resp, dynamic_metadata, mode_override) = self.handler.0.response_headers(hs.headers.as_ref()?, req.metadata_context, req.attributes);
+                let (common_resp, dynamic_metadata, mode_override) = self.handler.0.response_headers(hs.headers.as_ref()?, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::ResponseHeaders(HeadersResponse { response: Some(common_resp) })),
@@ -80,7 +81,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
                 })
             }
             ProcRequest::RequestBody(b) => {
-                let (common_resp, dynamic_metadata) = self.handler.0.request_body(&b.body, req.metadata_context, req.attributes);
+                let (common_resp, dynamic_metadata) = self.handler.0.request_body(&b.body, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::RequestBody(BodyResponse { response: Some(common_resp) })),
@@ -90,7 +91,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
                 })
             }
             ProcRequest::ResponseBody(b) => {
-                let (common_resp, dynamic_metadata) = self.handler.0.response_body(&b.body, req.metadata_context, req.attributes);
+                let (common_resp, dynamic_metadata) = self.handler.0.response_body(&b.body, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::ResponseBody(BodyResponse { response: Some(common_resp) })),
@@ -100,7 +101,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
                 })
             }
             ProcRequest::RequestTrailers(ts) => {
-                let (header_mutation, dynamic_metadata) = self.handler.0.request_trailers(ts.trailers.as_ref()?, req.metadata_context, req.attributes);
+                let (header_mutation, dynamic_metadata) = self.handler.0.request_trailers(ts.trailers.as_ref()?, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::RequestTrailers(TrailersResponse { header_mutation })),
@@ -110,7 +111,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ProcessingRequestHandlerServ
                 })
             }
             ProcRequest::ResponseTrailers(ts) => {
-                let (header_mutation, dynamic_metadata) = self.handler.0.response_trailers(ts.trailers.as_ref()?, req.metadata_context, req.attributes);
+                let (header_mutation, dynamic_metadata) = self.handler.0.response_trailers(ts.trailers.as_ref()?, req.metadata_context, req.attributes).await;
 
                 Some(ProcessingResponse {
                     response: Some(ProcResponse::ResponseTrailers(TrailersResponse { header_mutation })),
@@ -150,7 +151,7 @@ impl<T: ProcessingRequestHandler + std::fmt::Debug> ExternalProcessor for Proces
         tokio::spawn(async move {
             while let Some(result) = ins.next().await {
                 match result {
-                    Ok(v) => tx.send(Ok(this.dispatch(v))).await.expect("working rx"),
+                    Ok(v) => tx.send(Ok(this.dispatch(v).await)).await.expect("working rx"),
                     Err(err) => {
                         if let Some(io_err) = as_io_error(&err) {
                             if io_err.kind() == ErrorKind::BrokenPipe {
