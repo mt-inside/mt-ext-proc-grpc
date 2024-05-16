@@ -1,5 +1,9 @@
 set dotenv-load
 
+clean:
+	cargo clean
+	rm -rf packages
+
 default:
 	@just --list --unsorted --color=always
 
